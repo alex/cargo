@@ -1,0 +1,1 @@
+initSidebarItems({"enum":[["Kind",""]],"struct":[["Dependency","Informations about a dependency requested by a Cargo manifest."],["SerializedDependency",""]]});

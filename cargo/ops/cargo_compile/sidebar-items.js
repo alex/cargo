@@ -1,0 +1,1 @@
+initSidebarItems({"enum":[["CompileFilter",""],["CompileMode",""]],"fn":[["compile",""],["compile_pkg",""]],"struct":[["CompileOptions","Contains informations about how a package should be compiled."]]});

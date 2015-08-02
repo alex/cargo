@@ -1,0 +1,1 @@
+initSidebarItems({"struct":[["Package","Informations about a package that is available somewhere in the file system."],["PackageSet",""]]});

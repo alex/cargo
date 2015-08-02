@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="generator" content="rustdoc">
+    <meta name="description" content="API documentation for the Rust `resolver` mod in crate `cargo`.">
+    <meta name="keywords" content="rust, rustlang, rust-lang, resolver">
+
+    <title>cargo::core::resolver - Rust</title>
+
+    <link rel="stylesheet" type="text/css" href="../../../main.css">
+
+    
+    
+</head>
+<body class="rustdoc">
+    <!--[if lte IE 8]>
+    <div class="warning">
+        This old browser is unsupported and will most likely display funky
+        things.
+    </div>
+    <![endif]-->
+
+    
+
+    <section class="sidebar">
+        
+        <p class='location'><a href='../../index.html'>cargo</a>::<wbr><a href='../index.html'>core</a></p><script>window.sidebarCurrent = {name: 'resolver', ty: 'mod', relpath: '../'};</script><script defer src="../sidebar-items.js"></script>
+    </section>
+
+    <nav class="sub">
+        <form class="search-form js-only">
+            <div class="search-container">
+                <input class="search-input" name="search"
+                       autocomplete="off"
+                       placeholder="Click or press 'S' to search, '?' for more options..."
+                       type="search">
+            </div>
+        </form>
+    </nav>
+
+    <section id='main' class="content mod">
+<h1 class='fqn'><span class='in-band'>Module <a href='../../index.html'>cargo</a>::<wbr><a href='../index.html'>core</a>::<wbr><a class='mod' href=''>resolver</a></span><span class='out-of-band'><span id='render-detail'>
+            <a id="toggle-all-docs" href="javascript:void(0)" title="collapse all docs">
+                [<span class='inner'>&#x2212;</span>]
+            </a>
+        </span><a id='src-14382' class='srclink' href='../../../src/cargo/core/resolver/mod.rs.html#1-734' title='goto source code'>[src]</a></span></h1>
+<div class='docblock'><p>Resolution of the entire dependency graph for a crate</p>
+
+<p>This module implements the core logic in taking the world of crates and
+constraints and creating a resolved graph with locked versions for all
+crates and their dependencies. This is separate from the registry module
+which is more worried about discovering crates from various sources, this
+module just uses the Registry trait as a source to learn about crates from.</p>
+
+<p>Actually solving a constraint graph is an NP-hard (or NP-complete, I forget
+which) problem, this the algorithm is basically a nice heuristic to make
+sure we get roughly the best answer most of the time. The constraints that
+we&#39;re working with are:</p>
+
+<ol>
+<li>Each crate can have any number of dependencies. Each dependency can
+declare a version range that it is compatible with.</li>
+<li>Crates can be activated with multiple version (e.g. show up in the
+dependency graph twice) so long as each pairwise instance have
+semver-incompatible versions.</li>
+</ol>
+
+<p>The algorithm employed here is fairly simple, we simply do a DFS, activating
+the &quot;newest crate&quot; (highest version) first and then going to the next
+option. The heuristics we employ are:</p>
+
+<ul>
+<li>Never try to activate a crate version which is incompatible. This means we
+only try crates which will actually satisfy a dependency and we won&#39;t ever
+try to activate a crate that&#39;s semver compatible with something else
+activatd (as we&#39;re only allowed to have one).</li>
+<li>Always try to activate the highest version crate first. The default
+dependency in Cargo (e.g. when you write <code>foo = &quot;0.1.2&quot;</code>) is
+semver-compatible, so selecting the highest version possible will allow us
+to hopefully satisfy as many dependencies at once.</li>
+</ul>
+
+<p>Beyond that, what&#39;s implemented below is just a naive backtracking version
+which should in theory try all possible combinations of dependencies and
+versions to see if one works. The first resolution that works causes
+everything to bail out immediately and return success, and only if <em>nothing</em>
+works do we actually return an error up the stack.</p>
+
+<h2 id="performance" class='section-header'><a
+                           href="#performance">Performance</a></h2>
+<p>Note that this is a relatively performance-critical portion of Cargo. The
+data that we&#39;re processing is proportional to the size of the dependency
+graph, which can often be quite large (e.g. take a look at Servo). To make
+matters worse the DFS algorithm we&#39;re implemented is inherently quite
+inefficient and recursive. When we add the requirement of backtracking on
+top it means that we&#39;re implementing something that&#39;s very recursive and
+probably shouldn&#39;t be allocating all over the place.</p>
+
+<p>Once we&#39;ve avoided too many unnecessary allocations, however (e.g. using
+references, using reference counting, etc), it turns out that the
+performance in this module largely comes down to stack sizes due to the
+recursive nature of the implementation.</p>
+
+<h3 id="small-stack-sizes-(e.g.-y-u-inline(never))" class='section-header'><a
+                           href="#small-stack-sizes-(e.g.-y-u-inline(never))">Small Stack Sizes (e.g. y u inline(never))</a></h3>
+<p>One of the most important optimizations in this module right now is the
+attempt to minimize the stack space taken up by the <code>activate</code> and
+<code>activate_deps</code> functions. These two functions are mutually recursive in a
+CPS fashion.</p>
+
+<p>The recursion depth, if I&#39;m getting this right, is something along the order
+of O(E) where E is the number of edges in the dependency graph, and that&#39;s
+on the order of O(N<sup>2)</sup> where N is the number of crates in the graph. As a
+result we need to watch our stack size!</p>
+
+<p>Currently rustc is not great at producing small stacks because of landing
+pads and filling drop, so the first attempt at making small stacks is having
+literally small functions with very few owned values on the stack. This is
+also why there are many #[inline(never)] annotations in this module. By
+preventing these functions from being inlined we can make sure that these
+stack sizes stay small as the number of locals are under control.</p>
+
+<p>Another hazard when watching out for small stacks is passing around large
+structures by value. For example the <code>Context</code> below is a relatively large
+struct, so we always place it behind a <code>Box</code> to ensure the size at runtime
+is just a word (e.g. very easy to pass around).</p>
+
+<p>Combined together these tricks (plus a very recent version of LLVM) allow us
+to have a relatively small stack footprint for this implementation. Possible
+future optimizations include:</p>
+
+<ul>
+<li>Turn off landing pads for all of Cargo</li>
+<li>Wait for dynamic drop</li>
+<li>Use a manual stack instead of the OS stack (I suspect this will be super
+painful to implement)</li>
+<li>Spawn a new thread with a very large stack (this is what the compiler
+does)</li>
+<li>Implement a form of segmented stacks where we manually check the stack
+limit every so often.</li>
+</ul>
+
+<p>For now the current implementation of this module gets us past Servo&#39;s
+dependency graph (one of the largest known ones), so hopefully it&#39;ll work
+for a bit longer as well!</p>
+</div><h2 id='structs' class='section-header'><a href="#structs">Structs</a></h2>
+<table>
+                    <tr class=' module-item'>
+                        <td><a class='struct' href='struct.EncodableDependency.html'
+                               title='cargo::core::resolver::EncodableDependency'>EncodableDependency</a></td>
+                        <td class='docblock short'>
+                             
+                        </td>
+                    </tr>
+                
+                    <tr class=' module-item'>
+                        <td><a class='struct' href='struct.EncodablePackageId.html'
+                               title='cargo::core::resolver::EncodablePackageId'>EncodablePackageId</a></td>
+                        <td class='docblock short'>
+                             
+                        </td>
+                    </tr>
+                
+                    <tr class=' module-item'>
+                        <td><a class='struct' href='struct.EncodableResolve.html'
+                               title='cargo::core::resolver::EncodableResolve'>EncodableResolve</a></td>
+                        <td class='docblock short'>
+                             
+                        </td>
+                    </tr>
+                
+                    <tr class=' module-item'>
+                        <td><a class='struct' href='struct.Resolve.html'
+                               title='cargo::core::resolver::Resolve'>Resolve</a></td>
+                        <td class='docblock short'>
+                             <p>Represents a fully resolved package dependency graph. Each node in the graph
+is a package and edges represent dependencies between packages.</p>
+
+                        </td>
+                    </tr>
+                </table><h2 id='enums' class='section-header'><a href="#enums">Enums</a></h2>
+<table>
+                    <tr class=' module-item'>
+                        <td><a class='enum' href='enum.Method.html'
+                               title='cargo::core::resolver::Method'>Method</a></td>
+                        <td class='docblock short'>
+                             
+                        </td>
+                    </tr>
+                </table><h2 id='functions' class='section-header'><a href="#functions">Functions</a></h2>
+<table>
+                    <tr class=' module-item'>
+                        <td><a class='fn' href='fn.resolve.html'
+                               title='cargo::core::resolver::resolve'>resolve</a></td>
+                        <td class='docblock short'>
+                             <p>Builds the list of all packages required to build the first argument.</p>
+
+                        </td>
+                    </tr>
+                </table><h2 id='types' class='section-header'><a href="#types">Type Definitions</a></h2>
+<table>
+                    <tr class=' module-item'>
+                        <td><a class='type' href='type.Metadata.html'
+                               title='cargo::core::resolver::Metadata'>Metadata</a></td>
+                        <td class='docblock short'>
+                             
+                        </td>
+                    </tr>
+                </table></section>
+    <section id='search' class="content hidden"></section>
+
+    <section class="footer"></section>
+
+    <div id="help" class="hidden">
+        <div class="shortcuts">
+            <h1>Keyboard shortcuts</h1>
+            <dl>
+                <dt>?</dt>
+                <dd>Show this help dialog</dd>
+                <dt>S</dt>
+                <dd>Focus the search field</dd>
+                <dt>&larrb;</dt>
+                <dd>Move up in search results</dd>
+                <dt>&rarrb;</dt>
+                <dd>Move down in search results</dd>
+                <dt>&#9166;</dt>
+                <dd>Go to active search result</dd>
+            </dl>
+        </div>
+        <div class="infos">
+            <h1>Search tricks</h1>
+            <p>
+                Prefix searches with a type followed by a colon (e.g.
+                <code>fn:</code>) to restrict the search to a given type.
+            </p>
+            <p>
+                Accepted types are: <code>fn</code>, <code>mod</code>,
+                <code>struct</code>, <code>enum</code>,
+                <code>trait</code>, <code>typedef</code> (or
+                <code>tdef</code>).
+            </p>
+            <p>
+                Search functions by type signature (e.g.
+                <code>vec -> usize</code>)
+            </p>
+        </div>
+    </div>
+
+    
+
+    <script>
+        window.rootPath = "../../../";
+        window.currentCrate = "cargo";
+        window.playgroundUrl = "";
+    </script>
+    <script src="../../../jquery.js"></script>
+    <script src="../../../main.js"></script>
+    
+    <script async src="../../../search-index.js"></script>
+</body>
+</html>
